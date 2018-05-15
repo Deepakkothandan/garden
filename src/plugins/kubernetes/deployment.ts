@@ -101,6 +101,7 @@ export async function createDeployment(service: ContainerService, runtimeContext
           labels: [],
         },
         spec: {
+          automountServiceAccountToken: false,  // this prevents the pod from accessing the kubernetes API
           containers: [],
           // TODO: make restartPolicy configurable
           restartPolicy: "Always",
