@@ -8,7 +8,10 @@
 
 import Bluebird = require("bluebird")
 import * as Joi from "joi"
-import { GARDEN_ANNOTATION_KEYS_VERSION } from "../../constants"
+import {
+  GARDEN_ANNOTATION_KEYS_SERVICE,
+  GARDEN_ANNOTATION_KEYS_VERSION,
+} from "../../constants"
 import {
   joiIdentifier,
   validate,
@@ -17,7 +20,6 @@ import {
   Module,
   ModuleSpec,
 } from "../../types/module"
-import { ModuleActions } from "../../types/plugin"
 import {
   ParseModuleResult,
 } from "../../types/plugin/outputs"
@@ -27,16 +29,18 @@ import {
   ParseModuleParams,
 } from "../../types/plugin/params"
 import {
+  Service,
   ServiceConfig,
-  ServiceSpec,
   ServiceStatus,
 } from "../../types/service"
 import {
   TestConfig,
   TestSpec,
 } from "../../types/test"
+import { TreeVersion } from "../../vcs/base"
 import {
   apply,
+  applyMany,
 } from "./kubectl"
 import { getAppNamespace } from "./namespace"
 
@@ -44,7 +48,9 @@ export interface KubernetesSpecsModuleSpec extends ModuleSpec {
   specs: any[],
 }
 
-export class KubernetesSpecsModule extends Module<KubernetesSpecsModuleSpec> { }
+export interface KubernetesSpecsServiceSpec extends KubernetesSpecsModuleSpec { }
+
+export class KubernetesSpecsModule extends Module<KubernetesSpecsModuleSpec, KubernetesSpecsServiceSpec> { }
 
 const k8sSpecSchema = Joi.object().keys({
   apiVersion: Joi.string().required(),
@@ -59,10 +65,10 @@ const k8sSpecSchema = Joi.object().keys({
 
 const k8sSpecsSchema = Joi.array().items(k8sSpecSchema).min(1)
 
-export const kubernetesSpecHandlers: Partial<ModuleActions> = {
+export const kubernetesSpecHandlers = {
   async parseModule({ moduleConfig }: ParseModuleParams<KubernetesSpecsModule>): Promise<ParseModuleResult> {
     // TODO: check that each spec namespace is the same as on the project, if specified
-    const services: ServiceConfig<ServiceSpec>[] = [{
+    const services: ServiceConfig<KubernetesSpecsServiceSpec>[] = [{
       name: moduleConfig.name,
       dependencies: [],
       outputs: {},
@@ -86,9 +92,10 @@ export const kubernetesSpecHandlers: Partial<ModuleActions> = {
     const context = provider.config.context
     const namespace = await getAppNamespace(ctx, provider)
     const currentVersion = await service.module.getVersion()
+    const specs = await prepareSpecs(service, currentVersion)
 
     const dryRunOutputs = await Bluebird.map(
-      service.module.spec.specs,
+      specs,
       (spec) => apply(context, spec, { dryRun: true, namespace }),
     )
 
@@ -109,22 +116,33 @@ export const kubernetesSpecHandlers: Partial<ModuleActions> = {
     const context = provider.config.context
     const namespace = await getAppNamespace(ctx, provider)
     const currentVersion = await service.module.getVersion()
+    const specs = await prepareSpecs(service, currentVersion)
 
-    await Bluebird.each(service.module.spec.specs, async (spec) => {
-      const annotatedSpec = {
-        metadata: <any>{},
-        ...spec,
-      }
-
-      if (!annotatedSpec.metadata.annotations) {
-        annotatedSpec.metadata.annotations = { [GARDEN_ANNOTATION_KEYS_VERSION]: currentVersion.versionString }
-      } else {
-        annotatedSpec.metadata.annotations[GARDEN_ANNOTATION_KEYS_VERSION] = currentVersion.versionString
-      }
-
-      await apply(context, annotatedSpec, { namespace })
-    })
+    await applyMany(context, specs, { namespace, pruneSelector: `${GARDEN_ANNOTATION_KEYS_SERVICE}=${service.name}` })
 
     return {}
   },
+}
+
+async function prepareSpecs(service: Service<KubernetesSpecsModule>, version: TreeVersion) {
+  return service.module.spec.specs.map((rawSpec) => {
+    const spec = {
+      metadata: <any>{},
+      ...rawSpec,
+    }
+
+    if (!spec.metadata.annotations) {
+      spec.metadata.annotations = { [GARDEN_ANNOTATION_KEYS_VERSION]: version.versionString }
+    } else {
+      spec.metadata.annotations[GARDEN_ANNOTATION_KEYS_VERSION] = version.versionString
+    }
+
+    if (!spec.metadata.labels) {
+      spec.metadata.labels = { [GARDEN_ANNOTATION_KEYS_SERVICE]: service.name }
+    } else {
+      spec.metadata.labels[GARDEN_ANNOTATION_KEYS_SERVICE] = service.name
+    }
+
+    return spec
+  })
 }

@@ -34,6 +34,7 @@ import {
 import {
   gardenPlugin as k8sPlugin,
   KubernetesConfig,
+  KubernetesProvider,
 } from "./index"
 import {
   getSystemGarden,
@@ -74,10 +75,16 @@ async function configureLocalEnvironment(
   if (!isSystemGarden(provider)) {
     const sysGarden = await getSystemGarden(provider)
     const sysCtx = sysGarden.pluginContext
-    const sysProvider = {
+    const sysProvider: KubernetesProvider = {
       name: provider.name,
-      config: findByName(sysGarden.config.providers, provider.name)!,
+      config: <KubernetesConfig>findByName(sysGarden.config.providers, provider.name)!,
     }
+
+    execSync("minikube addons enable ingress")
+
+    // automatically set docker environment variables for minikube
+    // TODO: it would be better to explicitly provide those to docker instead of using process.env
+    setMinikubeDockerEnv()
 
     const sysStatus = await getEnvironmentStatus({
       ctx: sysCtx,
@@ -184,8 +191,6 @@ export function gardenPlugin({ config, logEntry }): GardenPlugin {
   }
 
   if (context === "minikube") {
-    execSync("minikube addons enable ingress")
-
     ingressHostname = config.ingressHostname
 
     if (!ingressHostname) {
@@ -196,10 +201,6 @@ export function gardenPlugin({ config, logEntry }): GardenPlugin {
 
     ingressPort = 80
     systemServices = []
-
-    // automatically set docker environment variables for minikube
-    // TODO: it would be better to explicitly provide those to docker instead of using process.env
-    setMinikubeDockerEnv()
   } else {
     ingressHostname = config.ingressHostname || "local.app.garden"
     ingressPort = 32000
